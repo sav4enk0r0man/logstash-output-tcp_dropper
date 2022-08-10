@@ -175,13 +175,13 @@ class LogStash::Outputs::TcpDropper < LogStash::Outputs::Base
         rescue => e
           @logger.debug("tcp output exception", :host => @host, :port => @port,
                        :exception => e, :backtrace => e.backtrace)
+          client_socket.close rescue nil
+          client_socket = nil
           if @ignore_failure
             events_skipped = @failure_events_skip
             @logger.warn("Skipped event: ", :event => payload)
             next
           end
-          client_socket.close rescue nil
-          client_socket = nil
           sleep @reconnect_interval
           retry
         end
