@@ -1,8 +1,8 @@
 require "logstash/devutils/rspec/spec_helper"
-require "logstash/outputs/tcp"
+require "logstash/outputs/tcp_dropper"
 require "flores/pki"
 
-describe LogStash::Outputs::Tcp do
+describe LogStash::Outputs::TcpDropper do
   subject { described_class.new(config) }
   let(:config) { {
     "host" => "localhost",

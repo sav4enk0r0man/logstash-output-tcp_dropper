@@ -10,9 +10,9 @@ require "logstash/util/socket_peer"
 #
 # Can either accept connections from clients or connect to a server,
 # depending on `mode`.
-class LogStash::Outputs::Tcp < LogStash::Outputs::Base
+class LogStash::Outputs::TcpDropper < LogStash::Outputs::Base
 
-  config_name "tcp"
+  config_name "tcp_dropper"
   concurrency :single
 
   default :codec, "json"
@@ -27,6 +27,12 @@ class LogStash::Outputs::Tcp < LogStash::Outputs::Base
 
   # When connect failed,retry interval in sec.
   config :reconnect_interval, :validate => :number, :default => 10
+
+  # When connection failed ignore and skip event
+  config :ignore_failure, :validate => :boolean, :default => false
+
+  # Number of ignored events after connection failure before trying to reconnect
+  config :failure_events_skip, :validate => :number, :default => 0
 
   # Mode to operate in. `server` listens for client connections,
   # `client` connects to a server.
@@ -148,20 +154,32 @@ class LogStash::Outputs::Tcp < LogStash::Outputs::Base
       end
     else
       client_socket = nil
+      events_skipped = 0
       @codec.on_event do |event, payload|
         begin
-          client_socket = connect unless client_socket
-          r,w,e = IO.select([client_socket], [client_socket], [client_socket], nil)
-          # don't expect any reads, but a readable socket might
-          # mean the remote end closed, so read it and throw it away.
-          # we'll get an EOFError if it happens.
-          client_socket.sysread(16384) if r.any?
+          if events_skipped == 0
+            client_socket = connect unless client_socket
+            r,w,e = IO.select([client_socket], [client_socket], [client_socket], nil)
+            # don't expect any reads, but a readable socket might
+            # mean the remote end closed, so read it and throw it away.
+            # we'll get an EOFError if it happens.
+            client_socket.sysread(16384) if r.any?
 
-          # Now send the payload
-          client_socket.syswrite(payload) if w.any?
+            # Now send the payload
+            client_socket.syswrite(payload) if w.any?
+          else
+            events_skipped -= 1
+            @logger.debug("Number of skipped events: ",
+                :events_skipped => @failure_events_skip - events_skipped)
+          end
         rescue => e
-          @logger.warn("tcp output exception", :host => @host, :port => @port,
+          @logger.debug("tcp output exception", :host => @host, :port => @port,
                        :exception => e, :backtrace => e.backtrace)
+          if @ignore_failure
+            events_skipped = @failure_events_skip
+            @logger.warn("Skipped event: ", :event => payload)
+            next
+          end
           client_socket.close rescue nil
           client_socket = nil
           sleep @reconnect_interval
@@ -173,25 +191,30 @@ class LogStash::Outputs::Tcp < LogStash::Outputs::Base
 
   private
   def connect
-    Stud::try do
-      client_socket = TCPSocket.new(@host, @port)
-      if @ssl_enable
-        client_socket = OpenSSL::SSL::SSLSocket.new(client_socket, @ssl_context)
-        begin
-          client_socket.connect
-        rescue OpenSSL::SSL::SSLError => ssle
-          @logger.error("SSL Error", :exception => ssle,
-                        :backtrace => ssle.backtrace)
-          # NOTE(mrichar1): Hack to prevent hammering peer
-          sleep(5)
-          raise
+      begin
+        client_socket = TCPSocket.new(@host, @port)
+        if @ssl_enable
+          client_socket = OpenSSL::SSL::SSLSocket.new(client_socket, @ssl_context)
+          begin
+            client_socket.connect
+          rescue OpenSSL::SSL::SSLError => ssle
+            log_error 'connect ssl failure:', ssle, backtrace: false
+            # NOTE(mrichar1): Hack to prevent hammering peer
+            sleep(5)
+            raise
+          end
+        end
+        client_socket.instance_eval { class << self; include ::LogStash::Util::SocketPeer end }
+        @logger.debug("opened connection", :client => client_socket.peer)
+        return client_socket
+      rescue => e
+        @logger.error('failed to connect:', :exception => e)
+        if !@ignore_failure
+          sleep @reconnect_interval
+          retry
         end
       end
-      client_socket.instance_eval { class << self; include ::LogStash::Util::SocketPeer end }
-      @logger.debug("Opened connection", :client => "#{client_socket.peer}")
-      return client_socket
-    end
-  end # def connect
+    end # def connect
 
   private
   def server?
@@ -202,4 +225,4 @@ class LogStash::Outputs::Tcp < LogStash::Outputs::Base
   def receive(event)
     @codec.encode(event)
   end # def receive
-end # class LogStash::Outputs::Tcp
+end # class LogStash::Outputs::TcpDropper

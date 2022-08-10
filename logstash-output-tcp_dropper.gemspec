@@ -1,6 +1,6 @@
 Gem::Specification.new do |s|
 
-  s.name            = 'logstash-output-tcp'
+  s.name            = 'logstash-output-tcp_dropper'
   s.version         = '6.0.0'
   s.licenses        = ['Apache License (2.0)']
   s.summary         = "Writes events over a TCP socket"
@@ -28,4 +28,3 @@ Gem::Specification.new do |s|
   s.add_development_dependency 'logstash-devutils'
   s.add_development_dependency 'flores'
 end
-
